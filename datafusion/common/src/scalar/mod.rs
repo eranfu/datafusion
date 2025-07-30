@@ -35,13 +35,14 @@ use std::sync::Arc;
 
 use crate::cast::{
     as_binary_array, as_binary_view_array, as_boolean_array, as_date32_array,
-    as_date64_array, as_decimal128_array, as_decimal256_array, as_dictionary_array,
-    as_duration_microsecond_array, as_duration_millisecond_array,
-    as_duration_nanosecond_array, as_duration_second_array, as_fixed_size_binary_array,
-    as_fixed_size_list_array, as_float16_array, as_float32_array, as_float64_array,
-    as_int16_array, as_int32_array, as_int64_array, as_int8_array, as_interval_dt_array,
-    as_interval_mdn_array, as_interval_ym_array, as_large_binary_array,
-    as_large_list_array, as_large_string_array, as_string_array, as_string_view_array,
+    as_date64_array, as_decimal128_array, as_decimal256_array, as_decimal32_array,
+    as_decimal64_array, as_dictionary_array, as_duration_microsecond_array,
+    as_duration_millisecond_array, as_duration_nanosecond_array,
+    as_duration_second_array, as_fixed_size_binary_array, as_fixed_size_list_array,
+    as_float16_array, as_float32_array, as_float64_array, as_int16_array, as_int32_array,
+    as_int64_array, as_int8_array, as_interval_dt_array, as_interval_mdn_array,
+    as_interval_ym_array, as_large_binary_array, as_large_list_array,
+    as_large_string_array, as_string_array, as_string_view_array,
     as_time32_millisecond_array, as_time32_second_array, as_time64_microsecond_array,
     as_time64_nanosecond_array, as_timestamp_microsecond_array,
     as_timestamp_millisecond_array, as_timestamp_nanosecond_array,
@@ -56,17 +57,17 @@ use crate::{_internal_datafusion_err, arrow_datafusion_err};
 use arrow::array::{
     new_empty_array, new_null_array, Array, ArrayData, ArrayRef, ArrowNativeTypeOp,
     ArrowPrimitiveType, AsArray, BinaryArray, BinaryViewArray, BooleanArray, Date32Array,
-    Date64Array, Decimal128Array, Decimal256Array, DictionaryArray,
-    DurationMicrosecondArray, DurationMillisecondArray, DurationNanosecondArray,
-    DurationSecondArray, FixedSizeBinaryArray, FixedSizeListArray, Float16Array,
-    Float32Array, Float64Array, GenericListArray, Int16Array, Int32Array, Int64Array,
-    Int8Array, IntervalDayTimeArray, IntervalMonthDayNanoArray, IntervalYearMonthArray,
-    LargeBinaryArray, LargeListArray, LargeStringArray, ListArray, MapArray,
-    MutableArrayData, PrimitiveArray, Scalar, StringArray, StringViewArray, StructArray,
-    Time32MillisecondArray, Time32SecondArray, Time64MicrosecondArray,
-    Time64NanosecondArray, TimestampMicrosecondArray, TimestampMillisecondArray,
-    TimestampNanosecondArray, TimestampSecondArray, UInt16Array, UInt32Array,
-    UInt64Array, UInt8Array, UnionArray,
+    Date64Array, Decimal128Array, Decimal256Array, Decimal32Array, Decimal64Array,
+    DictionaryArray, DurationMicrosecondArray, DurationMillisecondArray,
+    DurationNanosecondArray, DurationSecondArray, FixedSizeBinaryArray,
+    FixedSizeListArray, Float16Array, Float32Array, Float64Array, GenericListArray,
+    Int16Array, Int32Array, Int64Array, Int8Array, IntervalDayTimeArray,
+    IntervalMonthDayNanoArray, IntervalYearMonthArray, LargeBinaryArray, LargeListArray,
+    LargeStringArray, ListArray, MapArray, MutableArrayData, PrimitiveArray, Scalar,
+    StringArray, StringViewArray, StructArray, Time32MillisecondArray, Time32SecondArray,
+    Time64MicrosecondArray, Time64NanosecondArray, TimestampMicrosecondArray,
+    TimestampMillisecondArray, TimestampNanosecondArray, TimestampSecondArray,
+    UInt16Array, UInt32Array, UInt64Array, UInt8Array, UnionArray,
 };
 use arrow::buffer::ScalarBuffer;
 use arrow::compute::kernels::cast::{cast_with_options, CastOptions};
@@ -231,6 +232,10 @@ pub enum ScalarValue {
     Float32(Option<f32>),
     /// 64bit float
     Float64(Option<f64>),
+    /// 32bit decimal, using the i32 to represent the decimal, precision scale
+    Decimal32(Option<i32>, u8, i8),
+    /// 64bit decimal, using the i64 to represent the decimal, precision scale
+    Decimal64(Option<i64>, u8, i8),
     /// 128bit decimal, using the i128 to represent the decimal, precision scale
     Decimal128(Option<i128>, u8, i8),
     /// 256bit decimal, using the i256 to represent the decimal, precision scale
@@ -340,6 +345,14 @@ impl PartialEq for ScalarValue {
         // any newly added enum variant will require editing this list
         // or else face a compile error
         match (self, other) {
+            (Decimal32(v1, p1, s1), Decimal32(v2, p2, s2)) => {
+                v1.eq(v2) && p1.eq(p2) && s1.eq(s2)
+            }
+            (Decimal32(_, _, _), _) => false,
+            (Decimal64(v1, p1, s1), Decimal64(v2, p2, s2)) => {
+                v1.eq(v2) && p1.eq(p2) && s1.eq(s2)
+            }
+            (Decimal64(_, _, _), _) => false,
             (Decimal128(v1, p1, s1), Decimal128(v2, p2, s2)) => {
                 v1.eq(v2) && p1.eq(p2) && s1.eq(s2)
             }
@@ -459,6 +472,24 @@ impl PartialOrd for ScalarValue {
         // any newly added enum variant will require editing this list
         // or else face a compile error
         match (self, other) {
+            (Decimal32(v1, p1, s1), Decimal32(v2, p2, s2)) => {
+                if p1.eq(p2) && s1.eq(s2) {
+                    v1.partial_cmp(v2)
+                } else {
+                    // Two decimal values can be compared if they have the same precision and scale.
+                    None
+                }
+            }
+            (Decimal32(_, _, _), _) => None,
+            (Decimal64(v1, p1, s1), Decimal64(v2, p2, s2)) => {
+                if p1.eq(p2) && s1.eq(s2) {
+                    v1.partial_cmp(v2)
+                } else {
+                    // Two decimal values can be compared if they have the same precision and scale.
+                    None
+                }
+            }
+            (Decimal64(_, _, _), _) => None,
             (Decimal128(v1, p1, s1), Decimal128(v2, p2, s2)) => {
                 if p1.eq(p2) && s1.eq(s2) {
                     v1.partial_cmp(v2)
@@ -760,6 +791,16 @@ impl Hash for ScalarValue {
     fn hash<H: Hasher>(&self, state: &mut H) {
         use ScalarValue::*;
         match self {
+            Decimal32(v, p, s) => {
+                v.hash(state);
+                p.hash(state);
+                s.hash(state)
+            }
+            Decimal64(v, p, s) => {
+                v.hash(state);
+                p.hash(state);
+                s.hash(state)
+            }
             Decimal128(v, p, s) => {
                 v.hash(state);
                 p.hash(state);
@@ -1664,6 +1705,12 @@ impl ScalarValue {
             ScalarValue::Int16(_) => DataType::Int16,
             ScalarValue::Int32(_) => DataType::Int32,
             ScalarValue::Int64(_) => DataType::Int64,
+            ScalarValue::Decimal32(_, precision, scale) => {
+                DataType::Decimal32(*precision, *scale)
+            }
+            ScalarValue::Decimal64(_, precision, scale) => {
+                DataType::Decimal64(*precision, *scale)
+            }
             ScalarValue::Decimal128(_, precision, scale) => {
                 DataType::Decimal128(*precision, *scale)
             }
@@ -1937,6 +1984,8 @@ impl ScalarValue {
             ScalarValue::Float16(v) => v.is_none(),
             ScalarValue::Float32(v) => v.is_none(),
             ScalarValue::Float64(v) => v.is_none(),
+            ScalarValue::Decimal32(v, _, _) => v.is_none(),
+            ScalarValue::Decimal64(v, _, _) => v.is_none(),
             ScalarValue::Decimal128(v, _, _) => v.is_none(),
             ScalarValue::Decimal256(v, _, _) => v.is_none(),
             ScalarValue::Int8(v) => v.is_none(),
@@ -2192,9 +2241,19 @@ impl ScalarValue {
         }
 
         let array: ArrayRef = match &data_type {
+            DataType::Decimal32(precision, scale) => {
+                let decimal_array =
+                    ScalarValue::iter_to_decimal_32_array(scalars, *precision, *scale)?;
+                Arc::new(decimal_array)
+            }
+            DataType::Decimal64(precision, scale) => {
+                let decimal_array =
+                    ScalarValue::iter_to_decimal_64_array(scalars, *precision, *scale)?;
+                Arc::new(decimal_array)
+            }
             DataType::Decimal128(precision, scale) => {
                 let decimal_array =
-                    ScalarValue::iter_to_decimal_array(scalars, *precision, *scale)?;
+                    ScalarValue::iter_to_decimal_128_array(scalars, *precision, *scale)?;
                 Arc::new(decimal_array)
             }
             DataType::Decimal256(precision, scale) => {
@@ -2403,7 +2462,43 @@ impl ScalarValue {
         Ok(new_null_array(&DataType::Null, length))
     }
 
-    fn iter_to_decimal_array(
+    fn iter_to_decimal_32_array(
+        scalars: impl IntoIterator<Item = ScalarValue>,
+        precision: u8,
+        scale: i8,
+    ) -> Result<Decimal32Array> {
+        let array = scalars
+            .into_iter()
+            .map(|element: ScalarValue| match element {
+                ScalarValue::Decimal32(v1, _, _) => Ok(v1),
+                s => {
+                    _internal_err!("Expected ScalarValue::Null element. Received {s:?}")
+                }
+            })
+            .collect::<Result<Decimal32Array>>()?
+            .with_precision_and_scale(precision, scale)?;
+        Ok(array)
+    }
+
+    fn iter_to_decimal_64_array(
+        scalars: impl IntoIterator<Item = ScalarValue>,
+        precision: u8,
+        scale: i8,
+    ) -> Result<Decimal64Array> {
+        let array = scalars
+            .into_iter()
+            .map(|element: ScalarValue| match element {
+                ScalarValue::Decimal64(v1, _, _) => Ok(v1),
+                s => {
+                    _internal_err!("Expected ScalarValue::Null element. Received {s:?}")
+                }
+            })
+            .collect::<Result<Decimal64Array>>()?
+            .with_precision_and_scale(precision, scale)?;
+        Ok(array)
+    }
+
+    fn iter_to_decimal_128_array(
         scalars: impl IntoIterator<Item = ScalarValue>,
         precision: u8,
         scale: i8,
@@ -2441,7 +2536,43 @@ impl ScalarValue {
         Ok(array)
     }
 
-    fn build_decimal_array(
+    fn build_decimal32_array(
+        value: Option<i32>,
+        precision: u8,
+        scale: i8,
+        size: usize,
+    ) -> Result<Decimal32Array> {
+        Ok(match value {
+            Some(val) => Decimal32Array::from(vec![val; size])
+                .with_precision_and_scale(precision, scale)?,
+            None => {
+                let mut builder = Decimal32Array::builder(size)
+                    .with_precision_and_scale(precision, scale)?;
+                builder.append_nulls(size);
+                builder.finish()
+            }
+        })
+    }
+
+    fn build_decimal64_array(
+        value: Option<i64>,
+        precision: u8,
+        scale: i8,
+        size: usize,
+    ) -> Result<Decimal64Array> {
+        Ok(match value {
+            Some(val) => Decimal64Array::from(vec![val; size])
+                .with_precision_and_scale(precision, scale)?,
+            None => {
+                let mut builder = Decimal64Array::builder(size)
+                    .with_precision_and_scale(precision, scale)?;
+                builder.append_nulls(size);
+                builder.finish()
+            }
+        })
+    }
+
+    fn build_decimal128_array(
         value: Option<i128>,
         precision: u8,
         scale: i8,
@@ -2620,8 +2751,14 @@ impl ScalarValue {
     /// - a `Dictionary` that fails be converted to a dictionary array of size
     pub fn to_array_of_size(&self, size: usize) -> Result<ArrayRef> {
         Ok(match self {
+            ScalarValue::Decimal32(e, precision, scale) => Arc::new(
+                ScalarValue::build_decimal32_array(*e, *precision, *scale, size)?,
+            ),
+            ScalarValue::Decimal64(e, precision, scale) => Arc::new(
+                ScalarValue::build_decimal64_array(*e, *precision, *scale, size)?,
+            ),
             ScalarValue::Decimal128(e, precision, scale) => Arc::new(
-                ScalarValue::build_decimal_array(*e, *precision, *scale, size)?,
+                ScalarValue::build_decimal128_array(*e, *precision, *scale, size)?,
             ),
             ScalarValue::Decimal256(e, precision, scale) => Arc::new(
                 ScalarValue::build_decimal256_array(*e, *precision, *scale, size)?,
@@ -3323,7 +3460,45 @@ impl ScalarValue {
         ScalarValue::try_from_array(&cast_arr, 0)
     }
 
-    fn eq_array_decimal(
+    fn eq_array_decimal32(
+        array: &ArrayRef,
+        index: usize,
+        value: Option<&i32>,
+        precision: u8,
+        scale: i8,
+    ) -> Result<bool> {
+        let array = as_decimal32_array(array)?;
+        if array.precision() != precision || array.scale() != scale {
+            return Ok(false);
+        }
+        let is_null = array.is_null(index);
+        if let Some(v) = value {
+            Ok(!array.is_null(index) && array.value(index) == *v)
+        } else {
+            Ok(is_null)
+        }
+    }
+
+    fn eq_array_decimal64(
+        array: &ArrayRef,
+        index: usize,
+        value: Option<&i64>,
+        precision: u8,
+        scale: i8,
+    ) -> Result<bool> {
+        let array = as_decimal64_array(array)?;
+        if array.precision() != precision || array.scale() != scale {
+            return Ok(false);
+        }
+        let is_null = array.is_null(index);
+        if let Some(v) = value {
+            Ok(!array.is_null(index) && array.value(index) == *v)
+        } else {
+            Ok(is_null)
+        }
+    }
+
+    fn eq_array_decimal128(
         array: &ArrayRef,
         index: usize,
         value: Option<&i128>,
@@ -3390,8 +3565,26 @@ impl ScalarValue {
     #[inline]
     pub fn eq_array(&self, array: &ArrayRef, index: usize) -> Result<bool> {
         Ok(match self {
+            ScalarValue::Decimal32(v, precision, scale) => {
+                ScalarValue::eq_array_decimal32(
+                    array,
+                    index,
+                    v.as_ref(),
+                    *precision,
+                    *scale,
+                )?
+            }
+            ScalarValue::Decimal64(v, precision, scale) => {
+                ScalarValue::eq_array_decimal64(
+                    array,
+                    index,
+                    v.as_ref(),
+                    *precision,
+                    *scale,
+                )?
+            }
             ScalarValue::Decimal128(v, precision, scale) => {
-                ScalarValue::eq_array_decimal(
+                ScalarValue::eq_array_decimal128(
                     array,
                     index,
                     v.as_ref(),
@@ -3588,6 +3781,8 @@ impl ScalarValue {
                 | ScalarValue::Float16(_)
                 | ScalarValue::Float32(_)
                 | ScalarValue::Float64(_)
+                | ScalarValue::Decimal32(_, _, _)
+                | ScalarValue::Decimal64(_, _, _)
                 | ScalarValue::Decimal128(_, _, _)
                 | ScalarValue::Decimal256(_, _, _)
                 | ScalarValue::Int8(_)
@@ -3697,6 +3892,8 @@ impl ScalarValue {
             | ScalarValue::Float16(_)
             | ScalarValue::Float32(_)
             | ScalarValue::Float64(_)
+            | ScalarValue::Decimal32(_, _, _)
+            | ScalarValue::Decimal64(_, _, _)
             | ScalarValue::Decimal128(_, _, _)
             | ScalarValue::Decimal256(_, _, _)
             | ScalarValue::Int8(_)
@@ -4204,6 +4401,12 @@ macro_rules! format_option {
 impl fmt::Display for ScalarValue {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
+            ScalarValue::Decimal32(v, p, s) => {
+                write!(f, "{v:?},{p:?},{s:?}")?;
+            }
+            ScalarValue::Decimal64(v, p, s) => {
+                write!(f, "{v:?},{p:?},{s:?}")?;
+            }
             ScalarValue::Decimal128(v, p, s) => {
                 write!(f, "{v:?},{p:?},{s:?}")?;
             }
@@ -4393,6 +4596,8 @@ fn fmt_binary(data: &[u8], f: &mut fmt::Formatter) -> fmt::Result {
 impl fmt::Debug for ScalarValue {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
+            ScalarValue::Decimal32(_, _, _) => write!(f, "Decimal32({self})"),
+            ScalarValue::Decimal64(_, _, _) => write!(f, "Decimal64({self})"),
             ScalarValue::Decimal128(_, _, _) => write!(f, "Decimal128({self})"),
             ScalarValue::Decimal256(_, _, _) => write!(f, "Decimal256({self})"),
             ScalarValue::Boolean(_) => write!(f, "Boolean({self})"),
